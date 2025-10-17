@@ -1,1 +1,3 @@
+# This file tells the deployment server which version of Python to use.
+[server]
 python = "3.11"
