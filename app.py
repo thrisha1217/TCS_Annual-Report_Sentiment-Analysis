@@ -5,11 +5,12 @@ import re
 import string
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.tokenize import word_tokenize
 from textblob import TextBlob
 from gensim import corpora
 from gensim.models import LdaModel
-from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -41,30 +42,39 @@ def process_pdf(uploaded_file):
     This function is cached to run only once per file.
     """
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    pages_data = []
+    all_paragraphs = []
     for page_num, page in enumerate(doc):
-        pages_data.append({
-            'page_number': page_num + 1,
-            'text': page.get_text("text", sort=True) # Sort by reading order
-        })
+        # Extract text blocks with their metadata, which is better than splitting by '\\n\\n'
+        blocks = page.get_text("blocks")
+        for block in blocks:
+            # block[4] is the text content
+            paragraph_text = block[4].replace('\n', ' ').strip()
+            if len(paragraph_text) > 50: # Filter out short, irrelevant blocks
+                all_paragraphs.append({'page': page_num + 1, 'text': paragraph_text})
     doc.close()
-    df = pd.DataFrame(pages_data)
+    
+    df = pd.DataFrame(all_paragraphs)
 
-    # --- Preprocessing ---
+    # --- Preprocessing for search and topic modeling ---
     stop_words = set(stopwords.words('english'))
     custom_stopwords = ['tata', 'consultancy', 'services', 'tcs', 'company', 'ltd', 'limited', 'report', 'annual', 'financial', 'crore', 'rs', 'lakh', 'also', 'year', 'march']
     stop_words.update(custom_stopwords)
 
     def preprocess(text):
         text = text.lower()
-        text = re.sub(r'\d+', '', text)
+        # Keep digits as they can be important in reports
         text = text.translate(str.maketrans('', '', string.punctuation))
         text = text.strip()
         tokens = word_tokenize(text)
-        return [word for word in tokens if word not in stop_words and len(word) > 2]
+        return ' '.join([word for word in tokens if word not in stop_words and len(word) > 2])
 
-    df['processed_tokens'] = df['text'].apply(preprocess)
-    return df
+    df['processed_text'] = df['text'].apply(preprocess)
+    
+    # --- Create and cache the TF-IDF model ---
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(df['processed_text'])
+    
+    return df, vectorizer, tfidf_matrix
 
 # --- Chatbot Functions ---
 def get_sentiment(text):
@@ -72,33 +82,29 @@ def get_sentiment(text):
     blob = TextBlob(text)
     return blob.sentiment.polarity
 
-def answer_question(df, query):
+def answer_question(df, vectorizer, tfidf_matrix, query):
     """
-    Finds the most relevant paragraphs to a query, provides an answer,
-    and analyzes its sentiment.
+    Finds the most relevant paragraphs using TF-IDF and cosine similarity.
     """
-    processed_query = [word for word in query.lower().split() if word not in stopwords.words('english')]
+    # Preprocess the user's query using the same rules
+    processed_query = vectorizer.transform([query.lower()])
     
-    best_snippets = []
-    for index, row in df.iterrows():
-        # Find paragraphs within the page text
-        paragraphs = row['text'].split('\n\n')
-        for para in paragraphs:
-            if len(para.strip()) > 50: # Ensure paragraph has some substance
-                matches = sum(1 for word in processed_query if word in para.lower())
-                if matches > 0:
-                    best_snippets.append((matches, para, row['page_number']))
+    # Calculate cosine similarity between the query and all paragraphs
+    similarities = cosine_similarity(processed_query, tfidf_matrix).flatten()
     
-    # Sort snippets by number of matches and get top 3
-    best_snippets.sort(key=lambda x: x[0], reverse=True)
+    # Get the indices of the top 3 most similar paragraphs
+    top_indices = similarities.argsort()[-3:][::-1]
     
-    if not best_snippets:
-        return "I couldn't find a direct answer to that in the document. Please try asking in a different way.", "Neutral"
+    # Check if the top match has a reasonable similarity score
+    if similarities[top_indices[0]] < 0.1: # Threshold to avoid irrelevant answers
+        return "I couldn't find a confident answer to that in the document. Please try asking in a different way.", "Neutral"
 
     # Combine top snippets for the answer
-    top_snippets = best_snippets[:3]
-    answer_text = "\n\n".join([f"...{snippet[1]}... (Page {snippet[2]})" for snippet in top_snippets])
-    
+    answer_text = ""
+    for i in top_indices:
+        snippet = df.iloc[i]
+        answer_text += f"...{snippet['text']}... (Page {snippet['page']})\n\n"
+        
     # Analyze sentiment of the combined answer
     sentiment_score = get_sentiment(answer_text)
     if sentiment_score > 0.05:
@@ -113,7 +119,7 @@ def answer_question(df, query):
 def get_topics(df):
     """Performs topic modeling on the document."""
     with st.spinner("Analyzing topics across the document... this can take a moment."):
-        tokenized_data = df['processed_tokens'].tolist()
+        tokenized_data = [text.split() for text in df['processed_text']]
         id2word = corpora.Dictionary(tokenized_data)
         corpus = [id2word.doc2bow(text) for text in tokenized_data]
         
@@ -137,43 +143,43 @@ if "messages" not in st.session_state:
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf", label_visibility="collapsed")
 
 if uploaded_file:
-    # Process the document and store in session state
-    if "processed_df" not in st.session_state:
+    # Process the document and store everything in session state
+    if "processed_data" not in st.session_state:
         with st.spinner("Processing the document... Please wait."):
-            st.session_state.processed_df = process_pdf(uploaded_file)
+            df, vectorizer, tfidf_matrix = process_pdf(uploaded_file)
+            st.session_state.processed_data = {
+                "df": df,
+                "vectorizer": vectorizer,
+                "tfidf_matrix": tfidf_matrix
+            }
         
-        # Add initial assistant message after processing
         st.session_state.messages.append({
             "role": "assistant",
             "content": "Thank you for uploading the report. I am ready to answer your questions. \n\n**You can ask me things like:**\n- *What does the report say about employee growth?*\n- *Show me the main topics.*\n- *What is the sentiment on risk management?*"
         })
 
-    # Display chat messages from history on app rerun
+    # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
     # Accept user input
     if prompt := st.chat_input("Ask a question about the report..."):
-        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        # Display user message in chat message container
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate and display assistant response
         with st.chat_message("assistant"):
             response = ""
-            # Check for specific commands first
             if "topic" in prompt.lower():
-                response = get_topics(st.session_state.processed_df)
+                response = get_topics(st.session_state.processed_data["df"])
             else:
-                answer, sentiment = answer_question(st.session_state.processed_df, prompt)
+                data = st.session_state.processed_data
+                answer, sentiment = answer_question(data["df"], data["vectorizer"], data["tfidf_matrix"], prompt)
                 response = f"**Answer from the document:**\n\n{answer}\n\n---\n\n**Sentiment of this answer:** {sentiment}"
             
             st.markdown(response)
         
-        # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
 
 else:
