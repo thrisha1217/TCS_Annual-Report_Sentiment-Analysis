@@ -5,21 +5,24 @@ import re
 import string
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
+from nltk.tokenize import sent_tokenize, word_tokenize
 from textblob import TextBlob
-from gensim import corpora
-from gensim.models import LdaModel
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from gensim import corpora
+from gensim.models import LdaModel
+import numpy as np
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Annual Report Chatbot",
+    page_title="Annual Report NLP Assistant",
     page_icon="🤖",
-    layout="centered"
+    layout="wide"
 )
 
-# --- NLTK Data Download ---
+# --- NLTK Data Download (Cached) ---
 @st.cache_resource
 def download_nltk_data():
     """Downloads necessary NLTK models if not already present."""
@@ -34,79 +37,72 @@ def download_nltk_data():
 
 download_nltk_data()
 
-# --- Caching Functions for Performance ---
+# --- Core NLP Processing and Caching ---
 @st.cache_data
-def process_pdf(uploaded_file):
+def load_and_process_data(uploaded_file):
     """
-    Reads, processes, and prepares the entire PDF.
-    This function is cached to run only once per file.
+    (Tasks 1, 2, 3, 5, 7)
+    Reads PDF, preprocesses text, and creates a TF-IDF matrix.
+    This entire process is cached to run only once per file upload.
     """
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    all_paragraphs = []
-    for page_num, page in enumerate(doc):
-        # Extract text blocks with their metadata, which is better than splitting by '\\n\\n'
-        blocks = page.get_text("blocks")
-        for block in blocks:
-            # block[4] is the text content
-            paragraph_text = block[4].replace('\n', ' ').strip()
-            if len(paragraph_text) > 50: # Filter out short, irrelevant blocks
-                all_paragraphs.append({'page': page_num + 1, 'text': paragraph_text})
-    doc.close()
-    
-    df = pd.DataFrame(all_paragraphs)
+    with st.spinner("Analyzing the annual report... This may take a moment."):
+        # 1. Import PDF and read all pages
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        all_paragraphs = []
+        for page_num, page in enumerate(doc):
+            blocks = page.get_text("blocks")
+            for block in blocks:
+                para_text = block[4].replace('\n', ' ').strip()
+                if len(para_text.split()) > 10: # Filter for substantive paragraphs
+                    all_paragraphs.append({'page': page_num + 1, 'text': para_text})
+        doc.close()
+        
+        # 2. Save into a DataFrame
+        df = pd.DataFrame(all_paragraphs)
+        if df.empty:
+            return None, None, None, None
 
-    # --- Preprocessing for search and topic modeling ---
-    stop_words = set(stopwords.words('english'))
-    custom_stopwords = ['tata', 'consultancy', 'services', 'tcs', 'company', 'ltd', 'limited', 'report', 'annual', 'financial', 'crore', 'rs', 'lakh', 'also', 'year', 'march']
-    stop_words.update(custom_stopwords)
+        # 3. Preprocess text
+        stop_words = set(stopwords.words('english'))
+        custom_stopwords = ['tata', 'consultancy', 'services', 'tcs', 'company', 'ltd', 'limited', 'report', 'annual', 'financial', 'crore', 'rs', 'lakh', 'also', 'year', 'march', 'fy']
+        stop_words.update(custom_stopwords)
 
-    def preprocess(text):
-        text = text.lower()
-        # Keep digits as they can be important in reports
-        text = text.translate(str.maketrans('', '', string.punctuation))
-        text = text.strip()
-        tokens = word_tokenize(text)
-        return ' '.join([word for word in tokens if word not in stop_words and len(word) > 2])
+        def preprocess(text):
+            text = text.lower()
+            text = text.translate(str.maketrans('', '', string.punctuation))
+            text = re.sub(r'\d+', '', text) # Remove digits
+            tokens = word_tokenize(text) # 5. Word Tokenize
+            return ' '.join([word for word in tokens if word not in stop_words and len(word) > 2])
 
-    df['processed_text'] = df['text'].apply(preprocess)
-    
-    # --- Create and cache the TF-IDF model ---
-    vectorizer = TfidfVectorizer()
-    tfidf_matrix = vectorizer.fit_transform(df['processed_text'])
-    
+        df['processed_text'] = df['text'].apply(preprocess)
+        
+        # 7. Convert to TF-IDF Document Term Matrix
+        vectorizer = TfidfVectorizer(min_df=2, max_df=0.9)
+        tfidf_matrix = vectorizer.fit_transform(df['processed_text'])
+        
     return df, vectorizer, tfidf_matrix
 
-# --- Chatbot Functions ---
-def get_sentiment(text):
-    """Calculates sentiment polarity for a given text."""
-    blob = TextBlob(text)
-    return blob.sentiment.polarity
-
-def answer_question(df, vectorizer, tfidf_matrix, query):
+# --- Chatbot & Analysis Functions ---
+def find_answer(query, df, vectorizer, tfidf_matrix):
     """
-    Finds the most relevant paragraphs using TF-IDF and cosine similarity.
+    Finds the most relevant paragraphs for a query using TF-IDF.
     """
-    # Preprocess the user's query using the same rules
     processed_query = vectorizer.transform([query.lower()])
-    
-    # Calculate cosine similarity between the query and all paragraphs
     similarities = cosine_similarity(processed_query, tfidf_matrix).flatten()
+    top_indices = np.argsort(-similarities)[:3] # Get top 3 matches
     
-    # Get the indices of the top 3 most similar paragraphs
-    top_indices = similarities.argsort()[-3:][::-1]
-    
-    # Check if the top match has a reasonable similarity score
-    if similarities[top_indices[0]] < 0.1: # Threshold to avoid irrelevant answers
-        return "I couldn't find a confident answer to that in the document. Please try asking in a different way.", "Neutral"
-
-    # Combine top snippets for the answer
+    if similarities[top_indices[0]] < 0.1: # Confidence threshold
+        return "I could not find a relevant answer in the document.", "Neutral"
+        
+    # Combine answer snippets
     answer_text = ""
     for i in top_indices:
         snippet = df.iloc[i]
-        answer_text += f"...{snippet['text']}... (Page {snippet['page']})\n\n"
-        
-    # Analyze sentiment of the combined answer
-    sentiment_score = get_sentiment(answer_text)
+        answer_text += f"- {snippet['text']} (Page {snippet['page']})\n"
+    
+    # 4. Sentence Tokenize and Calculate Sentiment
+    blob = TextBlob(answer_text)
+    sentiment_score = blob.sentiment.polarity
     if sentiment_score > 0.05:
         sentiment_label = f"Positive (Score: {sentiment_score:.2f})"
     elif sentiment_score < -0.05:
@@ -116,72 +112,76 @@ def answer_question(df, vectorizer, tfidf_matrix, query):
         
     return answer_text, sentiment_label
 
-def get_topics(df):
-    """Performs topic modeling on the document."""
-    with st.spinner("Analyzing topics across the document... this can take a moment."):
+def generate_wordcloud(df):
+    """(Task 6) Generates and displays a word cloud and frequent words."""
+    full_text = " ".join(df['processed_text'])
+    wordcloud = WordCloud(width=800, height=400, background_color='white', colormap='viridis').generate(full_text)
+    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wordcloud, interpolation='bilinear')
+    ax.axis('off')
+    st.pyplot(fig)
+
+    words = word_tokenize(full_text)
+    freq_dist = nltk.FreqDist(words)
+    freq_df = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Frequency'])
+    st.dataframe(freq_df)
+
+def run_topic_modeling(df):
+    """(Task 8) Builds and displays the LDA topic model."""
+    with st.spinner("Discovering topics..."):
         tokenized_data = [text.split() for text in df['processed_text']]
         id2word = corpora.Dictionary(tokenized_data)
         corpus = [id2word.doc2bow(text) for text in tokenized_data]
         
-        lda_model = LdaModel(corpus=corpus, id2word=id2word, num_topics=10, random_state=100, passes=10, alpha='auto')
+        lda_model = LdaModel(corpus=corpus, id2word=id2word, num_topics=10, random_state=100, passes=15, alpha='auto', per_word_topics=True)
         
+        st.subheader("Top 10 Discovered Topics")
         topics = lda_model.print_topics(num_words=8)
-        response = "I found the following key topics in the report:\n\n"
         for i, topic in enumerate(topics):
-            response += f"**Topic {i+1}:** {re.sub(r'[^a-zA-Z_ ]', '', topic[1]).replace('  ', ' ')}\n\n"
-    return response
+            # Clean up the output for better display
+            topic_words = re.sub(r'[^a-zA-Z_ ]', '', topic[1]).replace("  ", " ")
+            st.markdown(f"**Topic {i+1}:** {topic_words}")
 
-# --- Main Application UI ---
-st.title("🤖 Annual Report Analysis Chatbot")
-st.markdown("This chatbot can answer questions about the uploaded annual report. Upload a PDF to begin.")
+# --- Streamlit App UI ---
+st.title("📄 TCS Annual Report NLP Assistant")
+st.markdown("Upload the TCS Annual Report PDF to begin. You can ask questions, or run a full analysis.")
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# File uploader
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf", label_visibility="collapsed")
+# --- File Uploader and Main Logic ---
+uploaded_file = st.file_uploader("Upload your PDF Report", type="pdf")
 
 if uploaded_file:
-    # Process the document and store everything in session state
-    if "processed_data" not in st.session_state:
-        with st.spinner("Processing the document... Please wait."):
-            df, vectorizer, tfidf_matrix = process_pdf(uploaded_file)
-            st.session_state.processed_data = {
-                "df": df,
-                "vectorizer": vectorizer,
-                "tfidf_matrix": tfidf_matrix
-            }
+    # Load and process data (this will be cached)
+    df, vectorizer, tfidf_matrix = load_and_process_data(uploaded_file)
+    
+    if df is not None:
+        st.success(f"Successfully analyzed {len(df)} paragraphs from the report.")
         
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": "Thank you for uploading the report. I am ready to answer your questions. \n\n**You can ask me things like:**\n- *What does the report say about employee growth?*\n- *Show me the main topics.*\n- *What is the sentiment on risk management?*"
-        })
+        # Create tabs for different functionalities
+        tab1, tab2, tab3 = st.tabs(["💬 Chatbot Q&A", "📊 Word Cloud Analysis", "🌐 Topic Modeling"])
 
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+        with tab1:
+            st.header("Ask a Question")
+            st.markdown("Ask a question about the report, and the chatbot will find the most relevant paragraphs and analyze their sentiment.")
+            user_query = st.text_input("e.g., What are the main business risks?", key="query_input")
 
-    # Accept user input
-    if prompt := st.chat_input("Ask a question about the report..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+            if user_query:
+                answer, sentiment = find_answer(user_query, df, vectorizer, tfidf_matrix)
+                st.subheader("Answer from Document:")
+                st.markdown(answer)
+                st.subheader("Sentiment of this Answer:")
+                st.markdown(sentiment)
 
-        with st.chat_message("assistant"):
-            response = ""
-            if "topic" in prompt.lower():
-                response = get_topics(st.session_state.processed_data["df"])
-            else:
-                data = st.session_state.processed_data
-                answer, sentiment = answer_question(data["df"], data["vectorizer"], data["tfidf_matrix"], prompt)
-                response = f"**Answer from the document:**\n\n{answer}\n\n---\n\n**Sentiment of this answer:** {sentiment}"
-            
-            st.markdown(response)
+        with tab2:
+            st.header("Frequent Words and Word Cloud")
+            with st.spinner("Generating visuals..."):
+                generate_wordcloud(df)
         
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
+        with tab3:
+            st.header("Latent Dirichlet Allocation (LDA) Topic Model")
+            run_topic_modeling(df)
+    else:
+        st.error("Could not extract text from the uploaded PDF. Please try another file.")
 else:
-    st.info("Please upload a PDF file to start the chat.")
+    st.info("Please upload a file to get started.")
 
