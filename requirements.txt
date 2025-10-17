@@ -1,0 +1,15 @@
+streamlit==1.39.0
+numpy==1.26.4
+scipy==1.11.4
+gensim==4.3.2
+pandas==2.2.2
+nltk==3.8.1
+textblob==0.17.1
+wordcloud==1.9.3
+scikit-learn==1.5.2
+matplotlib==3.9.2
+seaborn==0.13.2
+tqdm==4.66.5
+pdfplumber==0.11.4
+pymupdf==1.24.9
+pyLDAvis==3.4.1
