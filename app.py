@@ -1,172 +1,172 @@
-# ======================================================
-# app.py — Annual Report NLP Analyzer (No MALLET Version)
-# ======================================================
 import streamlit as st
 import pandas as pd
-import numpy as np
-import pdfplumber
+import fitz  # PyMuPDF
+from tqdm import tqdm
+import os
 import re
-from io import BytesIO
-from collections import Counter
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
-
+import string
 import nltk
 from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.probability import FreqDist
 from textblob import TextBlob
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import TfidfVectorizer
+import gensim
+from gensim import corpora
+from gensim.models import LdaModel
 
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from gensim.corpora import Dictionary
-from gensim.models import LdaModel, CoherenceModel
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="TCS Annual Report NLP Analysis",
+    page_icon="📄",
+    layout="wide"
+)
 
-# ------------------------------------------------------
-# NLTK setup
-# ------------------------------------------------------
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+# --- NLTK Data Download ---
+# Using a function to ensure this only runs once.
+@st.cache_resource
+def download_nltk_data():
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    try:
+        stopwords.words('english')
+    except LookupError:
+        nltk.download('stopwords')
+download_nltk_data()
 
-stop_words = set(stopwords.words('english'))
-lemmatizer = WordNetLemmatizer()
 
-# ------------------------------------------------------
-# Helper functions
-# ------------------------------------------------------
-def clean_text(text):
-    if not isinstance(text, str):
-        return ""
+# --- Caching Functions for Performance ---
+# CHANGE: Replaced deprecated st.cache with st.cache_data
+@st.cache_data
+def read_pdf_to_dataframe(file_path):
+    """Reads a PDF file and extracts text from each page into a pandas DataFrame."""
+    if not os.path.exists(file_path):
+        st.error(f"Error: The file '{file_path}' was not found.")
+        return pd.DataFrame()
+
+    doc = fitz.open(file_path)
+    pages_data = []
+    for page_num, page in enumerate(doc):
+        pages_data.append({
+            'page_number': page_num + 1,
+            'text': page.get_text()
+        })
+    doc.close()
+    return pd.DataFrame(pages_data)
+
+# CHANGE: Replaced deprecated st.cache with st.cache_data
+@st.cache_data
+def preprocess_text(text):
+    """Cleans and preprocesses a single string of text."""
+    stop_words = set(stopwords.words('english'))
+    custom_stopwords = ['tata', 'consultancy', 'services', 'tcs', 'company', 'ltd', 'limited', 'report', 'annual', 'financial', 'crore', 'rs', 'lakh', 'also', 'year', 'march']
+    stop_words.update(custom_stopwords)
+    
     text = text.lower()
-    text = re.sub(r"http\S+|www\S+|\S+@\S+", " ", text)
-    text = re.sub(r"[^a-z\s]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    tokens = text.split()
-    tokens = [t for t in tokens if t not in stop_words]
-    tokens = [lemmatizer.lemmatize(t) for t in tokens]
-    return " ".join(tokens)
+    text = re.sub(r'\d+', '', text)
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    text = text.strip()
+    tokens = word_tokenize(text)
+    filtered_tokens = [word for word in tokens if word not in stop_words and len(word) > 2]
+    return " ".join(filtered_tokens)
 
-def tokenize_text(text):
-    tokens = nltk.word_tokenize(text)
-    tokens = [t.lower() for t in tokens if t.isalpha()]
-    tokens = [lemmatizer.lemmatize(t) for t in tokens if t not in stop_words]
-    return tokens
 
-# ------------------------------------------------------
-# Streamlit UI
-# ------------------------------------------------------
-st.set_page_config(page_title="Annual Report NLP Analyzer", layout="wide")
-st.title("📊 Annual Report NLP Analyzer")
-st.write("Upload an **Annual Report (PDF)** to perform NLP tasks: cleaning, sentiment, wordcloud, and topic modeling (LDA).")
+# --- Main Application ---
+st.title("📄 TCS Annual Report NLP Analysis")
+st.markdown("This application performs a complete NLP analysis on the TCS Annual Report for FY 2024-25.")
 
-uploaded_file = st.file_uploader("📄 Upload Annual Report PDF", type=["pdf"])
+# --- Step 1 & 2: Load and Display Data ---
+st.header("1. Reading the PDF into a DataFrame")
+PDF_FILE_PATH = 'tcs-annual-report-2024-2025.pdf'
+df = read_pdf_to_dataframe(PDF_FILE_PATH)
 
-if uploaded_file:
-    # Step 1: Read PDF
-    st.subheader("1️⃣ Reading PDF...")
-    pages = []
-    with pdfplumber.open(uploaded_file) as pdf:
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text() or ""
-            pages.append(text)
+if not df.empty:
+    st.success("Successfully read the PDF into a DataFrame.")
+    st.write(f"Total pages read: {len(df)}")
+    st.dataframe(df.head())
 
-    df_pages = pd.DataFrame({
-        "page_no": list(range(1, len(pages)+1)),
-        "text": pages
-    })
-    df_pages["text_length"] = df_pages["text"].str.len()
-    df_pages = df_pages[df_pages["text_length"] > 20].reset_index(drop=True)
-    st.success(f"Read {len(df_pages)} pages successfully.")
-    st.dataframe(df_pages.head(3))
+    # --- Step 3: Preprocessing ---
+    st.header("2. Preprocessing the Text")
+    with st.spinner("Cleaning text data... this may take a moment."):
+        df['processed_text'] = df['text'].apply(preprocess_text)
+    st.success("Text preprocessing complete.")
+    st.write("Showing original text vs. cleaned text:")
+    st.dataframe(df[['text', 'processed_text']].head())
 
-    # Step 2: Clean text
-    st.subheader("2️⃣ Cleaning text...")
-    df_pages["clean_text"] = df_pages["text"].apply(clean_text)
-    df_pages["tokens"] = df_pages["clean_text"].apply(tokenize_text)
-    st.dataframe(df_pages[["page_no","clean_text"]].head(3))
+    # --- Step 4: Sentiment Analysis ---
+    st.header("3. Sentiment Analysis")
+    with st.spinner("Analyzing sentiment for each page..."):
+        sentiments = []
+        for text in df['text']:
+            sentences = sent_tokenize(text)
+            page_polarity = 0
+            if sentences:
+                for sentence in sentences:
+                    page_polarity += TextBlob(sentence).sentiment.polarity
+                sentiments.append(page_polarity / len(sentences))
+            else:
+                sentiments.append(0)
+        df['polarity'] = sentiments
+    st.success("Sentiment analysis complete.")
+    st.write("Average sentiment polarity per page (Positive > 0, Negative < 0):")
+    st.dataframe(df[['page_number', 'polarity']].head())
+    
+    avg_polarity = df['polarity'].mean()
+    st.metric(label="Overall Average Polarity of the Report", value=f"{avg_polarity:.4f}")
+    st.progress((avg_polarity + 1) / 2) # Normalize polarity from [-1, 1] to [0, 1] for progress bar
 
-    # Step 3: Sentiment analysis
-    st.subheader("3️⃣ Sentence-level Sentiment Analysis")
-    sent_rows = []
-    for _, row in df_pages.iterrows():
-        page_no = row["page_no"]
-        text = row["text"] or ""
-        sentences = nltk.sent_tokenize(text)
-        for sent in sentences:
-            tb = TextBlob(sent)
-            sent_rows.append((page_no, sent, tb.sentiment.polarity, tb.sentiment.subjectivity))
-    df_sents = pd.DataFrame(sent_rows, columns=["page_no","sentence","polarity","subjectivity"])
-    st.dataframe(df_sents.head(10))
+    # --- Step 5 & 6: Frequent Words & Word Cloud ---
+    st.header("4. Frequent Words and Word Cloud")
+    with st.spinner("Generating word cloud..."):
+        full_text_corpus = " ".join(df['processed_text'])
+        all_words = word_tokenize(full_text_corpus)
+        fdist = FreqDist(all_words)
+        
+        st.subheader("Top 20 Most Frequent Words")
+        freq_df = pd.DataFrame(fdist.most_common(20), columns=['Word', 'Frequency'])
+        st.dataframe(freq_df)
 
-    avg_polarity = df_sents["polarity"].mean()
-    st.metric("Average Sentiment Polarity", f"{avg_polarity:.3f}")
+        st.subheader("Word Cloud")
+        wordcloud = WordCloud(
+            width=800,
+            height=400,
+            background_color='white',
+            colormap='viridis',
+            min_font_size=10
+        ).generate(full_text_corpus)
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis("off")
+        st.pyplot(fig)
 
-    # Step 4: Frequent words
-    st.subheader("4️⃣ Frequent Words & WordCloud")
-    all_tokens = [t for tokens in df_pages["tokens"] for t in tokens]
-    freq = Counter(all_tokens)
-    top_words = pd.DataFrame(freq.most_common(20), columns=["word","count"])
-    st.dataframe(top_words)
-
-    wc = WordCloud(width=800, height=400, background_color="white").generate(" ".join(all_tokens))
-    fig, ax = plt.subplots(figsize=(10,5))
-    ax.imshow(wc, interpolation="bilinear")
-    ax.axis("off")
-    st.pyplot(fig)
-
-    # Step 5: TF-IDF and DTM
-    st.subheader("5️⃣ TF-IDF & Document-Term Matrix")
-    documents = df_pages["clean_text"].tolist()
-    cv = CountVectorizer(max_df=0.9, min_df=2)
-    dtm = cv.fit_transform(documents)
-    st.write("DTM shape:", dtm.shape)
-
-    tfidf_vect = TfidfVectorizer(max_df=0.9, min_df=2)
-    tfidf = tfidf_vect.fit_transform(documents)
-    st.write("TF-IDF shape:", tfidf.shape)
-
-    # Step 6: Topic modeling (LDA)
-    st.subheader("6️⃣ Topic Modeling (LDA - Gensim)")
-    tokenized_docs = df_pages["tokens"].tolist()
-    dictionary = Dictionary(tokenized_docs)
-    dictionary.filter_extremes(no_below=3, no_above=0.9)
-    corpus = [dictionary.doc2bow(text) for text in tokenized_docs]
-
-    num_topics = st.slider("Select number of topics:", 5, 20, 10)
-    lda_model = LdaModel(
-        corpus=corpus,
-        id2word=dictionary,
-        num_topics=num_topics,
-        random_state=42,
-        passes=10,
-        alpha='auto',
-        per_word_topics=True
-    )
-
-    st.write("### Top Topics")
-    topics_out = []
-    for i, topic in lda_model.print_topics(num_topics=num_topics, num_words=10):
-        st.write(f"**Topic {i}**: {topic}")
-        topics_out.append((i, topic))
-
-    coherence_model = CoherenceModel(model=lda_model, texts=tokenized_docs,
-                                     dictionary=dictionary, coherence='c_v')
-    coherence = coherence_model.get_coherence()
-    st.metric("Coherence Score", f"{coherence:.3f}")
-
-    # Step 7: Save results
-    st.subheader("💾 Download Results")
-    df_sents.to_csv("sentiment_results.csv", index=False)
-    top_words.to_csv("frequent_words.csv", index=False)
-    df_pages.to_csv("cleaned_pages.csv", index=False)
-
-    with open("sentiment_results.csv", "rb") as f:
-        st.download_button("⬇️ Download Sentiment Results", f, file_name="sentiment_results.csv")
-
-    with open("frequent_words.csv", "rb") as f:
-        st.download_button("⬇️ Download Frequent Words", f, file_name="frequent_words.csv")
-
-    with open("cleaned_pages.csv", "rb") as f:
-        st.download_button("⬇️ Download Cleaned Text Data", f, file_name="cleaned_pages.csv")
+    # --- Step 7 & 8: Topic Modeling ---
+    st.header("5. Topic Modeling with LDA")
+    with st.spinner("Building topic model... this is the most intensive step."):
+        tokenized_data = [word_tokenize(text) for text in df['processed_text']]
+        id2word = corpora.Dictionary(tokenized_data)
+        corpus = [id2word.doc2bow(text) for text in tokenized_data]
+        
+        lda_model = LdaModel(
+            corpus=corpus,
+            id2word=id2word,
+            num_topics=10,
+            random_state=100,
+            update_every=1,
+            chunksize=100,
+            passes=10,
+            alpha='auto'
+        )
+        
+        st.success("Topic model built successfully!")
+        st.subheader("Discovered Topics")
+        topics = lda_model.print_topics(num_words=10)
+        for i, topic in enumerate(topics):
+            st.markdown(f"**Topic {i+1}:** {topic[1]}")
 
 else:
-    st.info("👆 Upload an Annual Report PDF to begin.")
+    st.warning("Could not proceed with analysis as the DataFrame is empty.")
