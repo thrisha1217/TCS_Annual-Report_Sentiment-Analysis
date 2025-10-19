@@ -299,7 +299,7 @@ def main():
             col1, col2 = st.columns([1, 1.5])
             
             with col1:
-                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
                 st.subheader("Top 20 Frequent Words")
                 freq_dist = nltk.FreqDist(all_tokens)
                 df_freq = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Count'])
@@ -343,6 +343,7 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
 
