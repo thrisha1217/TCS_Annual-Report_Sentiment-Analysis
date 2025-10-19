@@ -22,7 +22,7 @@ import gensim
 from gensim import corpora, models
 import pyLDAvis
 import pyLDAvis.gensim_models as gensimvis
-import pyLDAvis.streamlit
+import streamlit.components.v1 as components # Import for rendering HTML
 
 # ----------------------------------------------------------------------------
 #                               PAGE CONFIGURATION
@@ -135,10 +135,8 @@ def download_nltk_data():
     """Downloads necessary NLTK models if not already present."""
     for resource in ['punkt', 'stopwords']:
         try:
-            # Correct way to check for NLTK data
             nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
-        except LookupError:
-            # Correct exception to catch for missing NLTK data
+        except LookupError: # Correct exception for missing NLTK data
             nltk.download(resource, quiet=True)
 
 # ----------------------------------------------------------------------------
@@ -195,7 +193,6 @@ def get_topic_model_gensim(_tokens, num_topics):
     
     lda_model = models.LdaModel(corpus, num_topics=num_topics, id2word=dictionary, passes=15, random_state=42)
     
-    # pyLDAvis.enable_notebook() # Not needed for streamlit component
     vis_data = gensimvis.prepare(lda_model, corpus, dictionary, R=15)
     return vis_data
 
@@ -335,8 +332,9 @@ def main():
             
             with st.spinner(f"Building LDA model for {num_topics} topics..."):
                 vis_data = get_topic_model_gensim(all_tokens, num_topics)
-                # Display the pyLDAvis visualization in Streamlit
-                pyLDAvis.streamlit.display(vis_data)
+                # Convert to HTML and display
+                vis_html = pyLDAvis.prepared_data_to_html(vis_data)
+                components.html(vis_html, width=1300, height=800)
                 
             st.markdown("</div>", unsafe_allow_html=True)
 
