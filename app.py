@@ -225,7 +225,7 @@ def main():
     st.sidebar.markdown("Analysis of the TCS Annual Report 2024-2025.")
     st.sidebar.markdown("---")
     
-    pdf_path = r"D:\SEM-VII\NLP\NLP Mini Project\tcs-annual-report-2024-2025.pdf"
+    pdf_path = r"tcs-annual-report-2024-2025.pdf"
     page_options = ["Overview", "Sentiment Analysis", "Word Analysis", "Topic Modeling"]
     
     st.sidebar.markdown("---")
@@ -352,4 +352,5 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
