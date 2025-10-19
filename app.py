@@ -44,7 +44,7 @@ def local_css():
         /* --- General --- */
         body {
             background-color: #0a192f;
-            color: #ffffff;
+            color: #000000;
             font-family: 'Inter', sans-serif;
         }
         .main .block-container {
@@ -65,7 +65,7 @@ def local_css():
 
         /* --- Headings & Main Text --- */
         h1, h2, h3, h4, h5, h6 {
-            color: #ffffff;
+            color: #000000;
             font-weight: 600;
         }
 
@@ -233,7 +233,7 @@ def main():
     st.sidebar.markdown("Analysis of the TCS Annual Report 2024-2025.")
     st.sidebar.markdown("---")
     
-    pdf_path = r"D:\SEM-VII\NLP\NLP Mini Project\tcs-annual-report-2024-2025.pdf"
+    pdf_path = r"tcs-annual-report-2024-2025.pdf"
     page_options = ["Overview", "Sentiment Analysis", "Word Analysis", "Topic Modeling"]
     
     st.sidebar.markdown("---")
@@ -350,4 +350,5 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
