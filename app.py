@@ -60,7 +60,7 @@ def local_css():
 
         /* --- Headings & Main Text --- */
         h1, h2, h3, h4, h5, h6 {
-            color: #ffffff;
+            color: #000000;
             font-weight: 600;
         }
 
@@ -343,6 +343,7 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
 
