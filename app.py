@@ -12,17 +12,12 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize, sent_tokenize
 from textblob import TextBlob
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
 import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
 import warnings
-
-# Gensim and pyLDAvis for Topic Modeling
-import gensim
-from gensim import corpora, models
-import pyLDAvis
-import pyLDAvis.gensim_models as gensimvis
-import streamlit.components.v1 as components # Import for rendering HTML
 
 # ----------------------------------------------------------------------------
 #                               PAGE CONFIGURATION
@@ -44,7 +39,7 @@ def local_css():
         /* --- General --- */
         body {
             background-color: #0a192f;
-            color: #000000;
+            color: #ffffff;
             font-family: 'Inter', sans-serif;
         }
         .main .block-container {
@@ -65,12 +60,19 @@ def local_css():
 
         /* --- Headings & Main Text --- */
         h1, h2, h3, h4, h5, h6 {
-            color: #000000;
+            color: #ffffff;
             font-weight: 600;
         }
 
         /* --- Cards (Dark Sections) for Plots --- */
-        
+        .card-dark {
+            background-color: #192A41;
+            border-radius: 12px;
+            border: 1px solid #233554;
+            padding: 2.5rem;
+            margin-bottom: 1.5rem;
+            height: 100%;
+        }
 
         /* --- Light Cards for Tables and Text --- */
         .card-light {
@@ -128,10 +130,8 @@ def download_nltk_data():
     """Downloads necessary NLTK models if not already present."""
     for resource in ['punkt', 'stopwords']:
         try:
-            # Correct way to check for NLTK data
             nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
         except LookupError:
-            # Correct exception to catch for missing NLTK data
             nltk.download(resource, quiet=True)
 
 # ----------------------------------------------------------------------------
@@ -181,16 +181,15 @@ def analyze_sentiment(raw_text):
     return df
 
 @st.cache_data
-def get_topic_model_gensim(_tokens, num_topics):
-    """Builds a Gensim LDA model and prepares data for pyLDAvis."""
-    dictionary = corpora.Dictionary([_tokens])
-    corpus = [dictionary.doc2bow(_tokens)]
+def get_topic_model(_clean_text, num_topics):
+    """Builds a scikit-learn LDA topic model."""
+    tfidf_vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+    doc_term_matrix = tfidf_vectorizer.fit_transform([_clean_text])
     
-    lda_model = models.LdaModel(corpus, num_topics=num_topics, id2word=dictionary, passes=15, random_state=42)
+    lda_model = LatentDirichletAllocation(n_components=num_topics, random_state=42)
+    lda_model.fit(doc_term_matrix)
     
-    # pyLDAvis.enable_notebook() # Not needed for streamlit component
-    vis_data = gensimvis.prepare(lda_model, corpus, dictionary, R=15)
-    return vis_data
+    return lda_model, tfidf_vectorizer, doc_term_matrix.shape
 
 # ----------------------------------------------------------------------------
 #                               PLOT STYLING
@@ -226,7 +225,7 @@ def main():
     st.sidebar.markdown("Analysis of the TCS Annual Report 2024-2025.")
     st.sidebar.markdown("---")
     
-    pdf_path = r"tcs-annual-report-2024-2025.pdf"
+    pdf_path = r"D:\SEM-VII\NLP\NLP Mini Project\tcs-annual-report-2024-2025.pdf"
     page_options = ["Overview", "Sentiment Analysis", "Word Analysis", "Topic Modeling"]
     
     st.sidebar.markdown("---")
@@ -239,113 +238,12 @@ def main():
     # --- MAIN PANEL ---
     if raw_text:
         all_tokens = preprocess_and_tokenize(raw_text)
-        clean_text_for_wc = ' '.join(all_tokens)
+        clean_text_for_model = ' '.join(all_tokens)
         df_sentiments = analyze_sentiment(raw_text)
 
         if selected_page == "Overview":
             st.title("📊 Document Overview")
             
             st.subheader("Key Document Metrics")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Pages", page_count)
-            col2.metric("Characters", f"{len(raw_text):,}")
-            col3.metric("Sentences", f"{len(df_sentiments):,}")
-            col4.metric("Total Tokens", f"{len(all_tokens):,}")
-            
-            st.markdown('<div class="card-light" style="margin-top: 2rem;">', unsafe_allow_html=True)
-            st.subheader("Raw Text Preview")
-            st.text_area("", raw_text[:2500], height=350, key="overview_text")
-            st.markdown("</div>", unsafe_allow_html=True)
-            
-        elif selected_page == "Sentiment Analysis":
-            st.title("Sentiment Analysis")
-
-            st.markdown('<div class="card-dark">', unsafe_allow_html=True)
-            avg_polarity = df_sentiments['Polarity'].mean()
-            sentiment_counts = df_sentiments['Sentiment'].value_counts()
-            
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.metric("Average Polarity", f"{avg_polarity:.3f}")
-                fig_pie, ax_pie = plt.subplots(figsize=(6, 6))
-                wedges, texts, autotexts = ax_pie.pie(sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%',
-                           startangle=90, colors=['#57a773', '#8c8c8c', '#d62728'], textprops={'color':"w", 'fontsize': 12})
-                ax_pie.axis('equal')
-                style_plot(fig_pie, ax_pie, "Sentence Sentiment Breakdown")
-                st.pyplot(fig_pie)
-            with col2:
-                st.subheader("Polarity & Subjectivity Distribution")
-                fig_hist, ax_hist = plt.subplots(figsize=(10, 5.5))
-                sns.histplot(df_sentiments['Polarity'], bins=50, kde=True, ax=ax_hist, color="#ff6b6b", label="Polarity")
-                sns.histplot(df_sentiments['Subjectivity'], bins=50, kde=True, ax=ax_hist, color="#4ecdc4", label="Subjectivity")
-                ax_hist.legend()
-                style_plot(fig_hist, ax_hist, "Distribution of Sentiment Scores")
-                st.pyplot(fig_hist)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            st.markdown('<div class="card-light">', unsafe_allow_html=True)
-            st.subheader("Sentiment Samples")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("##### Most Positive Sentences")
-                st.dataframe(df_sentiments.nlargest(5, 'Polarity'), use_container_width=True)
-            with col2:
-                st.markdown("##### Most Negative Sentences")
-                st.dataframe(df_sentiments.nsmallest(5, 'Polarity'), use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        elif selected_page == "Word Analysis":
-            st.title("🔍 Word Frequency & Cloud")
-            col1, col2 = st.columns([1, 1.5])
-            
-            with col1:
-                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
-                st.subheader("Top 20 Frequent Words")
-                freq_dist = nltk.FreqDist(all_tokens)
-                df_freq = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Count'])
-                fig, ax = plt.subplots(figsize=(8, 9))
-                sns.barplot(x='Count', y='Word', data=df_freq, palette='mako_r', ax=ax)
-                style_plot(fig, ax, 'Frequent Words')
-                st.pyplot(fig)
-                st.markdown("</div>", unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
-                st.subheader("Word Cloud")
-                wordcloud = WordCloud(width=800, height=600, background_color=None, mode="RGBA", colormap='viridis').generate(clean_text_for_wc)
-                fig_wc, ax_wc = plt.subplots(figsize=(10, 8))
-                ax_wc.imshow(wordcloud, interpolation='bilinear')
-                ax_wc.axis("off")
-                fig_wc.patch.set_facecolor('#192A41')
-                st.pyplot(fig_wc)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-        elif selected_page == "Topic Modeling":
-            st.title("🧩 Topic Modeling (pyLDAvis)")
-            st.markdown('<div class="card-light">', unsafe_allow_html=True)
-            st.subheader("Interactive Topic Visualization")
-            num_topics = st.slider("Select the number of topics:", min_value=3, max_value=15, value=10, step=1)
-            
-            with st.spinner(f"Building LDA model for {num_topics} topics..."):
-                vis_data = get_topic_model_gensim(all_tokens, num_topics)
-                # Convert to HTML and display using st.components.v1.html
-                vis_html = pyLDAvis.prepared_data_to_html(vis_data)
-                components.html(vis_html, width=1300, height=800, scrolling=True)
-                
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    else:
-        st.title("Welcome to the TCS Annual Report Analyzer")
-        st.error(f"Error: The report file was not found at the specified path:")
-        st.code(pdf_path)
-        st.info("Please make sure the file exists at that location and the script has permission to read it.")
-        
-# --- SCRIPT EXECUTION ---
-if __name__ == "__main__":
-    main()
-
-
-
-
-
+            col1, col2, col3, col4 = st.columns(4
 
