@@ -310,7 +310,7 @@ def main():
                 st.markdown("</div>", unsafe_allow_html=True)
             
             with col2:
-                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
                 st.subheader("Word Cloud")
                 wordcloud = WordCloud(width=800, height=600, background_color=None, mode="RGBA", colormap='viridis').generate(clean_text_for_wc)
                 fig_wc, ax_wc = plt.subplots(figsize=(10, 8))
@@ -343,6 +343,7 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
 
