@@ -1,187 +1,330 @@
+# ----------------------------------------------------------------------------
+#                                LIBRARIES
+# ----------------------------------------------------------------------------
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
+import numpy as np
 import re
-import string
+import io
+import os
+import pdfplumber
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.tokenize import word_tokenize, sent_tokenize
 from textblob import TextBlob
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from wordcloud import WordCloud
+from sklearn.decomposition import LatentDirichletAllocation
 import matplotlib.pyplot as plt
-from gensim import corpora
-from gensim.models import LdaModel
-import numpy as np
+import seaborn as sns
+from wordcloud import WordCloud
+import warnings
 
-# --- Page Configuration ---
+# ----------------------------------------------------------------------------
+#                               PAGE CONFIGURATION
+# ----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Annual Report NLP Assistant",
-    page_icon="🤖",
-    layout="wide"
+    page_title="TCS Report Analyzer",
+    page_icon="📄",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- NLTK Data Download (Cached) ---
+# ----------------------------------------------------------------------------
+#                               CUSTOM CSS
+# ----------------------------------------------------------------------------
+def local_css():
+    """Injects custom CSS for a light-on-dark theme."""
+    st.markdown("""
+        <style>
+        /* --- General --- */
+        body {
+            background-color: #0a192f;
+            color: #ffffff;
+            font-family: 'Inter', sans-serif;
+        }
+        .main .block-container {
+            padding: 2.5rem 3rem;
+        }
+        .stSpinner > div > div {
+            border-top-color: #ff6347;
+        }
+
+        /* --- Sidebar --- */
+        [data-testid="stSidebar"] {
+            background-color: #172a45;
+            border-right: 1px solid #233554;
+        }
+        [data-testid="stSidebar"] * {
+            color: #ffffff;
+        }
+
+        /* --- Headings & Main Text --- */
+        h1, h2, h3, h4, h5, h6 {
+            color: #000000;
+            font-weight: 600;
+        }
+
+        /* --- Cards (Dark Sections) for Plots --- */
+        .card-dark {
+            background-color: #172a45;
+            border-radius: 12px;
+            border: 1px solid #ffffff;
+            padding: 2.5rem;
+            margin-bottom: 1.5rem;
+            height: 100%;
+        }
+
+        
+        }
+        .card-light h1, .card-light h2, .card-light h3, .card-light h4, .card-light h5, .card-light h6, .card-light p {
+            color: #000000;
+        }
+        .stTextArea textarea {
+            background-color: #f0f2f6;
+            color: #000000;
+            border: 1px solid #cccccc;
+        }
+        
+        /* --- Metrics --- */
+        
+        .stMetric label {
+            color: #000000;
+        }
+        .stMetric div[data-testid="metric-value"] {
+            color: #ffffff;
+            font-size: 2.5rem;
+        }
+
+        </style>
+    """, unsafe_allow_html=True)
+
+# ----------------------------------------------------------------------------
+#                               INITIAL NLTK SETUP
+# ----------------------------------------------------------------------------
 @st.cache_resource
 def download_nltk_data():
-    """Downloads necessary NLTK models if not already present."""
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt')
-    try:
-        stopwords.words('english')
-    except LookupError:
-        nltk.download('stopwords')
+    for resource in ['punkt', 'stopwords']:
+        try:
+            nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
+        except nltk.downloader.DownloadError:
+            nltk.download(resource, quiet=True)
 
-download_nltk_data()
-
-# --- Core NLP Processing and Caching ---
+# ----------------------------------------------------------------------------
+#                               CACHED HELPER FUNCTIONS
+# ----------------------------------------------------------------------------
 @st.cache_data
-def load_and_process_data(uploaded_file):
-    """
-    (Tasks 1, 2, 3, 5, 7)
-    Reads PDF, preprocesses text, and creates a TF-IDF matrix.
-    This entire process is cached to run only once per file upload.
-    """
-    with st.spinner("Analyzing the annual report... This may take a moment."):
-        # 1. Import PDF and read all pages
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        all_paragraphs = []
-        for page_num, page in enumerate(doc):
-            blocks = page.get_text("blocks")
-            for block in blocks:
-                para_text = block[4].replace('\n', ' ').strip()
-                if len(para_text.split()) > 10: # Filter for substantive paragraphs
-                    all_paragraphs.append({'page': page_num + 1, 'text': para_text})
-        doc.close()
+def load_and_extract_text(pdf_path):
+    if not os.path.exists(pdf_path):
+        return None, 0
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    all_text = ""
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        page_count = len(pdf.pages)
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                all_text += text + "\n"
+    return all_text, page_count
+
+@st.cache_data
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\d+', '', text)
+    stop_words = set(stopwords.words('english'))
+    tokens = word_tokenize(text)
+    tokens = [word for word in tokens if word not in stop_words]
+    return ' '.join(tokens)
+
+@st.cache_data
+def analyze_sentiment(raw_text):
+    sentences = sent_tokenize(raw_text)
+    sentiments = []
+    for s in sentences:
+        blob = TextBlob(s)
+        sentiments.append({
+            "Sentence": s,
+            "Polarity": blob.sentiment.polarity,
+            "Subjectivity": blob.sentiment.subjectivity
+        })
+    df = pd.DataFrame(sentiments)
+    df['Sentiment'] = df['Polarity'].apply(
+        lambda x: 'Positive' if x > 0.05 else ('Negative' if x < -0.05 else 'Neutral')
+    )
+    return df
+
+@st.cache_data
+def get_topic_model(_clean_text, num_topics):
+    tfidf_vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+    doc_term_matrix = tfidf_vectorizer.fit_transform([_clean_text])
+    lda_model = LatentDirichletAllocation(n_components=num_topics, random_state=42)
+    lda_model.fit(doc_term_matrix)
+    return lda_model, tfidf_vectorizer, doc_term_matrix.shape
+
+# ----------------------------------------------------------------------------
+#                               PLOT STYLING
+# ----------------------------------------------------------------------------
+def style_plot(fig, ax, title, dark_theme=True):
+    """Applies styling to a matplotlib plot."""
+    bg_color = '#172a45' if dark_theme else '#ffffff'
+    text_color = '#ffffff' if dark_theme else '#000000'
+    label_color = '#a0a0d0' if dark_theme else '#333333'
+    tick_color = '#e0e0e0' if dark_theme else '#333333'
+    spine_color = '#233554' if dark_theme else '#cccccc'
         
-        # 2. Save into a DataFrame
-        df = pd.DataFrame(all_paragraphs)
-        if df.empty:
-            return None, None, None, None
-
-        # 3. Preprocess text
-        stop_words = set(stopwords.words('english'))
-        custom_stopwords = ['tata', 'consultancy', 'services', 'tcs', 'company', 'ltd', 'limited', 'report', 'annual', 'financial', 'crore', 'rs', 'lakh', 'also', 'year', 'march', 'fy']
-        stop_words.update(custom_stopwords)
-
-        def preprocess(text):
-            text = text.lower()
-            text = text.translate(str.maketrans('', '', string.punctuation))
-            text = re.sub(r'\d+', '', text) # Remove digits
-            tokens = word_tokenize(text) # 5. Word Tokenize
-            return ' '.join([word for word in tokens if word not in stop_words and len(word) > 2])
-
-        df['processed_text'] = df['text'].apply(preprocess)
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
+    ax.set_title(title, color=text_color, fontsize=18, pad=20)
+    ax.xaxis.label.set_color(label_color)
+    ax.yaxis.label.set_color(label_color)
+    ax.tick_params(axis='x', colors=tick_color)
+    ax.tick_params(axis='y', colors=tick_color)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(spine_color)
         
-        # 7. Convert to TF-IDF Document Term Matrix
-        vectorizer = TfidfVectorizer(min_df=2, max_df=0.9)
-        tfidf_matrix = vectorizer.fit_transform(df['processed_text'])
-        
-    return df, vectorizer, tfidf_matrix
+# ----------------------------------------------------------------------------
+#                               MAIN APP LOGIC
+# ----------------------------------------------------------------------------
+def main():
+    warnings.filterwarnings("ignore")
+    local_css()
+    download_nltk_data()
 
-# --- Chatbot & Analysis Functions ---
-def find_answer(query, df, vectorizer, tfidf_matrix):
-    """
-    Finds the most relevant paragraphs for a query using TF-IDF.
-    """
-    processed_query = vectorizer.transform([query.lower()])
-    similarities = cosine_similarity(processed_query, tfidf_matrix).flatten()
-    top_indices = np.argsort(-similarities)[:3] # Get top 3 matches
+    # --- SIDEBAR ---
+    st.sidebar.title("📄 TCS Report Analyzer")
+    st.sidebar.markdown("Analysis of the TCS Annual Report 2024-2025.")
+    st.sidebar.markdown("---")
     
-    if similarities[top_indices[0]] < 0.1: # Confidence threshold
-        return "I could not find a relevant answer in the document.", "Neutral"
-        
-    # Combine answer snippets
-    answer_text = ""
-    for i in top_indices:
-        snippet = df.iloc[i]
-        answer_text += f"- {snippet['text']} (Page {snippet['page']})\n"
+    pdf_path = r"D:\SEM-VII\NLP\NLP Mini Project\tcs-annual-report-2024-2025.pdf"
+    page_options = ["Overview", "Sentiment Analysis", "Word Analysis", "Topic Modeling"]
     
-    # 4. Sentence Tokenize and Calculate Sentiment
-    blob = TextBlob(answer_text)
-    sentiment_score = blob.sentiment.polarity
-    if sentiment_score > 0.05:
-        sentiment_label = f"Positive (Score: {sentiment_score:.2f})"
-    elif sentiment_score < -0.05:
-        sentiment_label = f"Negative (Score: {sentiment_score:.2f})"
+    st.sidebar.markdown("---")
+    selected_page = st.sidebar.radio("Navigate", page_options)
+
+    # --- LOAD DATA ---
+    with st.spinner("Analyzing the TCS Annual Report..."):
+        raw_text, page_count = load_and_extract_text(pdf_path)
+
+    # --- MAIN PANEL ---
+    if raw_text:
+        clean_text = preprocess_text(raw_text)
+        all_tokens = clean_text.split()
+        df_sentiments = analyze_sentiment(raw_text)
+
+        if selected_page == "Overview":
+            st.title("📊 Document Overview")
+            
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Key Document Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Pages", page_count)
+            col2.metric("Characters", f"{len(raw_text):,}")
+            col3.metric("Sentences", f"{len(df_sentiments):,}")
+            col4.metric("Total Tokens", f"{len(all_tokens):,}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            st.markdown('<div class="card-light">', unsafe_allow_html=True)
+            st.subheader("Raw Text Preview")
+            st.text_area("", raw_text[:2500], height=350, key="overview_text")
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        elif selected_page == "Sentiment Analysis":
+            st.title("Sentiment Analysis")
+
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            avg_polarity = df_sentiments['Polarity'].mean()
+            sentiment_counts = df_sentiments['Sentiment'].value_counts()
+            
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.metric("Average Polarity", f"{avg_polarity:.3f}")
+                fig_pie, ax_pie = plt.subplots(figsize=(6, 6))
+                wedges, texts, autotexts = ax_pie.pie(sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%',
+                           startangle=90, colors=['#57a773', '#8c8c8c', '#d62728'], textprops={'color':"w", 'fontsize': 12})
+                ax_pie.axis('equal')
+                style_plot(fig_pie, ax_pie, "Sentence Sentiment Breakdown")
+                st.pyplot(fig_pie)
+            with col2:
+                st.subheader("Polarity & Subjectivity Distribution")
+                fig_hist, ax_hist = plt.subplots(figsize=(10, 5.5))
+                sns.histplot(df_sentiments['Polarity'], bins=50, kde=True, ax=ax_hist, color="#ff6b6b", label="Polarity")
+                sns.histplot(df_sentiments['Subjectivity'], bins=50, kde=True, ax=ax_hist, color="#4ecdc4", label="Subjectivity")
+                ax_hist.legend()
+                style_plot(fig_hist, ax_hist, "Distribution of Sentiment Scores")
+                st.pyplot(fig_hist)
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            st.markdown('<div class="card-light">', unsafe_allow_html=True)
+            st.subheader("Sentiment Samples")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("##### Most Positive Sentences")
+                st.dataframe(df_sentiments.nlargest(5, 'Polarity'), use_container_width=True)
+            with col2:
+                st.markdown("##### Most Negative Sentences")
+                st.dataframe(df_sentiments.nsmallest(5, 'Polarity'), use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        elif selected_page == "Word Analysis":
+            st.title("🔍 Word Frequency & Cloud")
+            col1, col2 = st.columns([1, 1.5])
+            
+            with col1:
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                st.subheader("Top 20 Frequent Words")
+                freq_dist = nltk.FreqDist(all_tokens)
+                df_freq = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Count'])
+                fig, ax = plt.subplots(figsize=(8, 9))
+                sns.barplot(x='Count', y='Word', data=df_freq, palette='mako_r', ax=ax)
+                style_plot(fig, ax, 'Frequent Words')
+                st.pyplot(fig)
+                st.markdown("</div>", unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                st.subheader("Word Cloud")
+                wordcloud = WordCloud(width=800, height=600, background_color=None, mode="RGBA", colormap='viridis').generate(clean_text)
+                fig_wc, ax_wc = plt.subplots(figsize=(10, 8))
+                ax_wc.imshow(wordcloud, interpolation='bilinear')
+                ax_wc.axis("off")
+                fig_wc.patch.set_facecolor('#172a45')
+                st.pyplot(fig_wc)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        elif selected_page == "Topic Modeling":
+            st.title("🧩 Topic Modeling (LDA)")
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Discover Latent Topics")
+            num_topics = st.slider("Select the number of topics:", min_value=3, max_value=15, value=10, step=1)
+            
+            with st.spinner(f"Building LDA model for {num_topics} topics..."):
+                lda_model, tfidf_vectorizer, matrix_shape = get_topic_model(clean_text, num_topics)
+                feature_names = tfidf_vectorizer.get_feature_names_out()
+                
+                st.write(f"TF-IDF Matrix Shape: **{matrix_shape}** (documents, features).")
+                
+                cols = st.columns(2)
+                for i in range(num_topics):
+                    with cols[i % 2]:
+                        topic = lda_model.components_[i]
+                        top_words_idx = topic.argsort()[:-8:-1]
+                        top_words = [feature_names[j] for j in top_words_idx]
+                        top_weights = topic[top_words_idx]
+                        
+                        fig, ax = plt.subplots(figsize=(6, 4))
+                        sns.barplot(x=top_weights, y=top_words, ax=ax, palette="rocket_r")
+                        style_plot(fig, ax, f'Topic #{i + 1}')
+                        st.pyplot(fig)
+            st.markdown("</div>", unsafe_allow_html=True)
+
     else:
-        sentiment_label = f"Neutral (Score: {sentiment_score:.2f})"
+        st.title("Welcome to the TCS Annual Report Analyzer")
+        st.error(f"Error: The report file was not found at the specified path:")
+        st.code(pdf_path)
+        st.info("Please make sure the file exists at that location and the script has permission to read it.")
         
-    return answer_text, sentiment_label
-
-def generate_wordcloud(df):
-    """(Task 6) Generates and displays a word cloud and frequent words."""
-    full_text = " ".join(df['processed_text'])
-    wordcloud = WordCloud(width=800, height=400, background_color='white', colormap='viridis').generate(full_text)
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wordcloud, interpolation='bilinear')
-    ax.axis('off')
-    st.pyplot(fig)
-
-    words = word_tokenize(full_text)
-    freq_dist = nltk.FreqDist(words)
-    freq_df = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Frequency'])
-    st.dataframe(freq_df)
-
-def run_topic_modeling(df):
-    """(Task 8) Builds and displays the LDA topic model."""
-    with st.spinner("Discovering topics..."):
-        tokenized_data = [text.split() for text in df['processed_text']]
-        id2word = corpora.Dictionary(tokenized_data)
-        corpus = [id2word.doc2bow(text) for text in tokenized_data]
-        
-        lda_model = LdaModel(corpus=corpus, id2word=id2word, num_topics=10, random_state=100, passes=15, alpha='auto', per_word_topics=True)
-        
-        st.subheader("Top 10 Discovered Topics")
-        topics = lda_model.print_topics(num_words=8)
-        for i, topic in enumerate(topics):
-            # Clean up the output for better display
-            topic_words = re.sub(r'[^a-zA-Z_ ]', '', topic[1]).replace("  ", " ")
-            st.markdown(f"**Topic {i+1}:** {topic_words}")
-
-# --- Streamlit App UI ---
-st.title("📄 TCS Annual Report NLP Assistant")
-st.markdown("Upload the TCS Annual Report PDF to begin. You can ask questions, or run a full analysis.")
-
-# --- File Uploader and Main Logic ---
-uploaded_file = st.file_uploader("Upload your PDF Report", type="pdf")
-
-if uploaded_file:
-    # Load and process data (this will be cached)
-    df, vectorizer, tfidf_matrix = load_and_process_data(uploaded_file)
-    
-    if df is not None:
-        st.success(f"Successfully analyzed {len(df)} paragraphs from the report.")
-        
-        # Create tabs for different functionalities
-        tab1, tab2, tab3 = st.tabs(["💬 Chatbot Q&A", "📊 Word Cloud Analysis", "🌐 Topic Modeling"])
-
-        with tab1:
-            st.header("Ask a Question")
-            st.markdown("Ask a question about the report, and the chatbot will find the most relevant paragraphs and analyze their sentiment.")
-            user_query = st.text_input("e.g., What are the main business risks?", key="query_input")
-
-            if user_query:
-                answer, sentiment = find_answer(user_query, df, vectorizer, tfidf_matrix)
-                st.subheader("Answer from Document:")
-                st.markdown(answer)
-                st.subheader("Sentiment of this Answer:")
-                st.markdown(sentiment)
-
-        with tab2:
-            st.header("Frequent Words and Word Cloud")
-            with st.spinner("Generating visuals..."):
-                generate_wordcloud(df)
-        
-        with tab3:
-            st.header("Latent Dirichlet Allocation (LDA) Topic Model")
-            run_topic_modeling(df)
-    else:
-        st.error("Could not extract text from the uploaded PDF. Please try another file.")
-else:
-    st.info("Please upload a file to get started.")
+# --- SCRIPT EXECUTION ---
+if __name__ == "__main__":
+    main()
 
