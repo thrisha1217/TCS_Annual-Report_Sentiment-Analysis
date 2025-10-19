@@ -39,7 +39,7 @@ def local_css():
         /* --- General --- */
         body {
             background-color: #0a192f;
-            color: #ffffff;
+            color: #000000;
             font-family: 'Inter', sans-serif;
         }
         .main .block-container {
@@ -64,15 +64,6 @@ def local_css():
             font-weight: 600;
         }
 
-        /* --- Cards (Dark Sections) for Plots --- */
-        .card-dark {
-            background-color: #192A41;
-            border-radius: 12px;
-            border: 1px solid #233554;
-            padding: 2.5rem;
-            margin-bottom: 1.5rem;
-            height: 100%;
-        }
 
         /* --- Light Cards for Tables and Text --- */
         .card-light {
@@ -257,7 +248,7 @@ def main():
             st.markdown("</div>", unsafe_allow_html=True)
             
         elif selected_page == "Sentiment Analysis":
-            st.title("😊 Sentiment Analysis")
+            st.title("Sentiment Analysis")
 
             st.markdown('<div class="card-dark">', unsafe_allow_html=True)
             avg_polarity = df_sentiments['Polarity'].mean()
@@ -298,7 +289,7 @@ def main():
             col1, col2 = st.columns([1, 1.5])
             
             with col1:
-                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
                 st.subheader("Top 20 Frequent Words")
                 freq_dist = nltk.FreqDist(all_tokens)
                 df_freq = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Count'])
@@ -309,7 +300,7 @@ def main():
                 st.markdown("</div>", unsafe_allow_html=True)
             
             with col2:
-                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.markdown('<div class="card-dark" style="height: 0px;">', unsafe_allow_html=True)
                 st.subheader("Word Cloud")
                 wordcloud = WordCloud(width=800, height=600, background_color=None, mode="RGBA", colormap='viridis').generate(clean_text_for_model)
                 fig_wc, ax_wc = plt.subplots(figsize=(10, 8))
@@ -352,5 +343,6 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
