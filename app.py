@@ -265,7 +265,7 @@ def main():
             st.markdown("</div>", unsafe_allow_html=True)
             
         elif selected_page == "Sentiment Analysis":
-            st.title("😊 Sentiment Analysis")
+            st.title("Sentiment Analysis")
 
             st.markdown('<div class="card-dark">', unsafe_allow_html=True)
             avg_polarity = df_sentiments['Polarity'].mean()
@@ -350,5 +350,6 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
