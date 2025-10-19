@@ -70,14 +70,7 @@ def local_css():
         }
 
         /* --- Cards (Dark Sections) for Plots --- */
-        .card-dark {
-            background-color: #192A41;
-            border-radius: 12px;
-            border: 1px solid #233554;
-            padding: 2.5rem;
-            margin-bottom: 1.5rem;
-            height: 100%;
-        }
+        
 
         /* --- Light Cards for Tables and Text --- */
         .card-light {
@@ -350,6 +343,7 @@ def main():
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     main()
+
 
 
 
