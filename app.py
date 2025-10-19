@@ -245,5 +245,111 @@ def main():
             st.title("📊 Document Overview")
             
             st.subheader("Key Document Metrics")
-            col1, col2, col3, col4 = st.columns(4
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Pages", page_count)
+            col2.metric("Characters", f"{len(raw_text):,}")
+            col3.metric("Sentences", f"{len(df_sentiments):,}")
+            col4.metric("Total Tokens", f"{len(all_tokens):,}")
+            
+            st.markdown('<div class="card-light" style="margin-top: 2rem;">', unsafe_allow_html=True)
+            st.subheader("Raw Text Preview")
+            st.text_area("", raw_text[:2500], height=350, key="overview_text")
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        elif selected_page == "Sentiment Analysis":
+            st.title("😊 Sentiment Analysis")
+
+            st.markdown('<div class="card-dark">', unsafe_allow_html=True)
+            avg_polarity = df_sentiments['Polarity'].mean()
+            sentiment_counts = df_sentiments['Sentiment'].value_counts()
+            
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.metric("Average Polarity", f"{avg_polarity:.3f}")
+                fig_pie, ax_pie = plt.subplots(figsize=(6, 6))
+                wedges, texts, autotexts = ax_pie.pie(sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%',
+                           startangle=90, colors=['#57a773', '#8c8c8c', '#d62728'], textprops={'color':"w", 'fontsize': 12})
+                ax_pie.axis('equal')
+                style_plot(fig_pie, ax_pie, "Sentence Sentiment Breakdown")
+                st.pyplot(fig_pie)
+            with col2:
+                st.subheader("Polarity & Subjectivity Distribution")
+                fig_hist, ax_hist = plt.subplots(figsize=(10, 5.5))
+                sns.histplot(df_sentiments['Polarity'], bins=50, kde=True, ax=ax_hist, color="#ff6b6b", label="Polarity")
+                sns.histplot(df_sentiments['Subjectivity'], bins=50, kde=True, ax=ax_hist, color="#4ecdc4", label="Subjectivity")
+                ax_hist.legend()
+                style_plot(fig_hist, ax_hist, "Distribution of Sentiment Scores")
+                st.pyplot(fig_hist)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown('<div class="card-light">', unsafe_allow_html=True)
+            st.subheader("Sentiment Samples")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("##### Most Positive Sentences")
+                st.dataframe(df_sentiments.nlargest(5, 'Polarity'), use_container_width=True)
+            with col2:
+                st.markdown("##### Most Negative Sentences")
+                st.dataframe(df_sentiments.nsmallest(5, 'Polarity'), use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        elif selected_page == "Word Analysis":
+            st.title("🔍 Word Frequency & Cloud")
+            col1, col2 = st.columns([1, 1.5])
+            
+            with col1:
+                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.subheader("Top 20 Frequent Words")
+                freq_dist = nltk.FreqDist(all_tokens)
+                df_freq = pd.DataFrame(freq_dist.most_common(20), columns=['Word', 'Count'])
+                fig, ax = plt.subplots(figsize=(8, 9))
+                sns.barplot(x='Count', y='Word', data=df_freq, palette='mako_r', ax=ax)
+                style_plot(fig, ax, 'Frequent Words')
+                st.pyplot(fig)
+                st.markdown("</div>", unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="card-dark" style="height: 680px;">', unsafe_allow_html=True)
+                st.subheader("Word Cloud")
+                wordcloud = WordCloud(width=800, height=600, background_color=None, mode="RGBA", colormap='viridis').generate(clean_text_for_model)
+                fig_wc, ax_wc = plt.subplots(figsize=(10, 8))
+                ax_wc.imshow(wordcloud, interpolation='bilinear')
+                ax_wc.axis("off")
+                fig_wc.patch.set_facecolor('#192A41')
+                st.pyplot(fig_wc)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        elif selected_page == "Topic Modeling":
+            st.title("🧩 Topic Modeling (LDA)")
+            st.markdown('<div class="card-dark">', unsafe_allow_html=True)
+            st.subheader("Discover Latent Topics")
+            num_topics = st.slider("Select the number of topics:", min_value=3, max_value=15, value=10, step=1)
+            
+            with st.spinner(f"Building LDA model for {num_topics} topics..."):
+                lda_model, tfidf_vectorizer, matrix_shape = get_topic_model(clean_text_for_model, num_topics)
+                feature_names = tfidf_vectorizer.get_feature_names_out()
+                
+                st.write(f"TF-IDF Matrix Shape: **{matrix_shape}** (documents, features).")
+
+                for topic_idx, topic in enumerate(lda_model.components_):
+                    top_words_idx = topic.argsort()[:-8:-1]
+                    top_words = [feature_names[j] for j in top_words_idx]
+                    top_weights = topic[top_words_idx]
+                    
+                    with st.expander(f"Topic #{topic_idx + 1}: {', '.join(top_words[:3])}..."):
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        sns.barplot(x=top_weights, y=top_words, ax=ax, palette="rocket_r")
+                        style_plot(fig, ax, f'Top Words for Topic #{topic_idx + 1}')
+                        st.pyplot(fig)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    else:
+        st.title("Welcome to the TCS Annual Report Analyzer")
+        st.error(f"Error: The report file was not found at the specified path:")
+        st.code(pdf_path)
+        st.info("Please make sure the file exists at that location and the script has permission to read it.")
+        
+# --- SCRIPT EXECUTION ---
+if __name__ == "__main__":
+    main()
 
